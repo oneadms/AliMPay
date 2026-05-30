@@ -236,9 +236,10 @@ class BillQuery
             return $privateKey;
         }
 
-        return "-----BEGIN RSA PRIVATE KEY-----\n"
+        $privateKey = preg_replace('/\s+/', '', $privateKey);
+        return "-----BEGIN PRIVATE KEY-----\n"
             . wordwrap($privateKey, 64, "\n", true)
-            . "\n-----END RSA PRIVATE KEY-----";
+            . "\n-----END PRIVATE KEY-----";
     }
 
     private function validateQueryParams(
