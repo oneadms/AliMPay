@@ -9,6 +9,8 @@ composer.lock
 .env
 .env.local
 .env.*.local
+/config/alipay.php
+/config/codepay.json
 
 # Logs
 /logs/
