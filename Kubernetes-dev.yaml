@@ -48,6 +48,8 @@ metadata:
   name: alimpay
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: alimpay
@@ -97,11 +99,9 @@ spec:
               subPath: alipay.php
               readOnly: true
           readinessProbe:
-            exec:
-              command:
-                - sh
-                - -c
-                - test -s /var/www/html/config/alipay.php && test -w /var/www/html/data && test -w /var/www/html/logs && test -w /var/www/html/qrcodes && php -r 'require "/var/www/html/vendor/autoload.php"; new AliMPay\\Core\\CodePay();'
+            httpGet:
+              path: /api.php?action=health
+              port: http
             initialDelaySeconds: 10
             periodSeconds: 30
             timeoutSeconds: 5
