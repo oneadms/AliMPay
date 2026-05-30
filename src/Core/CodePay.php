@@ -402,15 +402,25 @@ class CodePay
      */
     private function getBaseUrl(): string
     {
-        $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $port = $_SERVER['SERVER_PORT'] ?? '80';
-        
-        // 如果是标准端口，不需要显示端口号
+        $forwardedProto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+        $protocol = $forwardedProto !== ''
+            ? strtolower(trim(explode(',', $forwardedProto)[0]))
+            : ((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http');
+
+        if (!in_array($protocol, ['http', 'https'], true)) {
+            $protocol = 'http';
+        }
+
+        $forwardedHost = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? '';
+        $host = $forwardedHost !== ''
+            ? trim(explode(',', $forwardedHost)[0])
+            : ($_SERVER['HTTP_HOST'] ?? 'localhost');
+        $port = $_SERVER['HTTP_X_FORWARDED_PORT'] ?? $_SERVER['SERVER_PORT'] ?? '80';
+
         if (($protocol === 'https' && $port === '443') || ($protocol === 'http' && $port === '80')) {
             return $protocol . '://' . $host;
         }
-        
+
         return $protocol . '://' . $host . ':' . $port;
     }
 
