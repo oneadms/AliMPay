@@ -59,7 +59,7 @@ spec:
         app: alimpay
     spec:
       imagePullSecrets:
-        - name: dockerhub-registry
+        - name: ghcr-registry
       securityContext:
         fsGroup: 33
       initContainers:
