@@ -216,8 +216,7 @@ class BillQuery
             . $url . "\n"
             . $body . "\n";
 
-        $privateKey = $this->normalizePrivateKey($config['private_key']);
-        $key = openssl_get_privatekey($privateKey);
+        $key = $this->getPrivateKeyResource($config['private_key']);
         if (!$key) {
             throw new \Exception('支付宝应用私钥格式错误');
         }
@@ -229,17 +228,42 @@ class BillQuery
         return 'ALIPAY-SHA256withRSA ' . $authString . ',sign=' . base64_encode($signature);
     }
 
-    private function normalizePrivateKey(string $privateKey): string
+    private function getPrivateKeyResource(string $privateKey)
     {
-        $privateKey = trim($privateKey);
-        if (strpos($privateKey, '-----BEGIN') === 0) {
-            return $privateKey;
+        $normalized = $this->normalizePrivateKeyBody($privateKey);
+        $pkcs8 = "-----BEGIN PRIVATE KEY-----\n"
+            . wordwrap($normalized, 64, "\n", true)
+            . "\n-----END PRIVATE KEY-----";
+        $pkcs1 = "-----BEGIN RSA PRIVATE KEY-----\n"
+            . wordwrap($normalized, 64, "\n", true)
+            . "\n-----END RSA PRIVATE KEY-----";
+
+        $key = openssl_get_privatekey($pkcs8);
+        if ($key) {
+            return $key;
         }
 
-        $privateKey = preg_replace('/\s+/', '', $privateKey);
-        return "-----BEGIN PRIVATE KEY-----\n"
-            . wordwrap($privateKey, 64, "\n", true)
-            . "\n-----END PRIVATE KEY-----";
+        $key = openssl_get_privatekey($pkcs1);
+        if ($key) {
+            return $key;
+        }
+
+        $this->logger->error('Alipay private key parse failed', [
+            'normalized_length' => strlen($normalized),
+            'prefix' => substr($normalized, 0, 12),
+            'suffix' => substr($normalized, -12),
+            'openssl_error' => openssl_error_string()
+        ]);
+
+        return false;
+    }
+
+    private function normalizePrivateKeyBody(string $privateKey): string
+    {
+        $privateKey = trim($privateKey);
+        $privateKey = preg_replace('/-----BEGIN [^-]+-----/', '', $privateKey);
+        $privateKey = preg_replace('/-----END [^-]+-----/', '', $privateKey);
+        return preg_replace('/\s+/', '', $privateKey);
     }
 
     private function validateQueryParams(
