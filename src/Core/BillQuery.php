@@ -167,14 +167,15 @@ class BillQuery
         $query = http_build_query($queryParams, '', '&', PHP_QUERY_RFC3986);
         $url = $resourcePath . '?' . $query;
 
+        $body = '{}';
         $headers = [
             'Accept' => 'application/json',
             'Content-Type' => 'application/json',
             'alipay-request-id' => $this->alipayClient->getAlipayConfigUtil()->createUuid(),
         ];
-        $this->alipayClient->getAlipayConfigUtil()->sign('GET', $url, '', $headers);
+        $headers['authorization'] = $this->buildAuthorizationHeader('GET', $url, $body);
 
-        $authorization = $headers['Authorization'] ?? '';
+        $authorization = $headers['authorization'] ?? '';
         $this->logger->info('Prepared signed Alipay account log request', [
             'url' => $resourcePath,
             'query_keys' => array_keys($queryParams),
@@ -186,6 +187,7 @@ class BillQuery
         $client = new Client();
         $response = $client->request('GET', rtrim($this->alipayClient->getConfig()['server_url'], '/') . $url, [
             'headers' => $headers,
+            'body' => $body,
         ]);
 
         $body = (string)$response->getBody();
@@ -198,6 +200,45 @@ class BillQuery
         }
 
         return $decoded;
+    }
+
+    private function buildAuthorizationHeader(string $method, string $url, string $body): string
+    {
+        $config = $this->alipayClient->getConfig();
+        $nonce = $this->alipayClient->getAlipayConfigUtil()->createUuid();
+        $timestamp = (string)time();
+        $authString = 'app_id=' . $config['app_id']
+            . ',timestamp=' . $timestamp
+            . ',nonce=' . $nonce
+            . ',expired_seconds=600';
+        $content = $authString . "\n"
+            . $method . "\n"
+            . $url . "\n"
+            . $body . "\n";
+
+        $privateKey = $this->normalizePrivateKey($config['private_key']);
+        $key = openssl_get_privatekey($privateKey);
+        if (!$key) {
+            throw new \Exception('支付宝应用私钥格式错误');
+        }
+
+        if (!openssl_sign($content, $signature, $key, OPENSSL_ALGO_SHA256)) {
+            throw new \Exception('支付宝请求签名生成失败');
+        }
+
+        return 'ALIPAY-SHA256withRSA ' . $authString . ',sign=' . base64_encode($signature);
+    }
+
+    private function normalizePrivateKey(string $privateKey): string
+    {
+        $privateKey = trim($privateKey);
+        if (strpos($privateKey, '-----BEGIN') === 0) {
+            return $privateKey;
+        }
+
+        return "-----BEGIN RSA PRIVATE KEY-----\n"
+            . wordwrap($privateKey, 64, "\n", true)
+            . "\n-----END RSA PRIVATE KEY-----";
     }
 
     private function validateQueryParams(
