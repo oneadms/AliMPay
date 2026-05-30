@@ -60,7 +60,7 @@ jobs:
             -n $K8S_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply --validate=false -f -
           sed -i "s|image: __IMAGE__|image: $IMAGE_NAME:$IMAGE_TAG|" ./Kubernetes-dev.yaml
-          sed -i "s|host: __ALIMPAY_HOST__|host: $ALIMPAY_HOST|" ./Kubernetes-dev.yaml
+          sed -i "s|__ALIMPAY_HOST__|$ALIMPAY_HOST|g" ./Kubernetes-dev.yaml
           kubectl apply --validate=false -n $K8S_NAMESPACE -f ./Kubernetes-dev.yaml
           kubectl rollout restart -n $K8S_NAMESPACE deployment/alimpay
           kubectl rollout status -n $K8S_NAMESPACE deployment/alimpay --timeout=180s
