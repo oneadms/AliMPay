@@ -58,6 +58,8 @@ spec:
       labels:
         app: alimpay
     spec:
+      imagePullSecrets:
+        - name: dockerhub-registry
       securityContext:
         fsGroup: 33
       initContainers:
@@ -79,7 +81,7 @@ spec:
       containers:
         - name: alimpay
           image: __IMAGE__
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 80

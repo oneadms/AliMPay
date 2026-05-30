@@ -13,40 +13,24 @@ jobs:
     permissions:
       contents: read
     env:
-      IMAGE_NAME: alimpay
+      IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/alimpay
       IMAGE_TAG: ${{ github.sha }}
-      IMAGE_ARCHIVE: alimpay-${{ github.sha }}.tar.gz
       K8S_NAMESPACE: dev
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Docker Build And Save
+      - name: Docker Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Docker Build And Push
         run: |
           docker build --platform=linux/amd64 -t $IMAGE_NAME:$IMAGE_TAG -t $IMAGE_NAME:latest .
-          docker save $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest | gzip -1 > $IMAGE_ARCHIVE
-          ls -lh $IMAGE_ARCHIVE
-
-      - name: Import image on K3s node
-        env:
-          K3S_SSH_HOST: ${{ secrets.K3S_SSH_HOST }}
-          K3S_SSH_PORT: ${{ secrets.K3S_SSH_PORT || '22' }}
-          K3S_SSH_USER: ${{ secrets.K3S_SSH_USER }}
-          K3S_SSH_KEY_B64: ${{ secrets.K3S_SSH_KEY_B64 }}
-        run: |
-          test -n "$K3S_SSH_HOST"
-          test -n "$K3S_SSH_PORT"
-          test -n "$K3S_SSH_USER"
-          test -n "$K3S_SSH_KEY_B64"
-          mkdir -p ~/.ssh
-          printf '%s' "$K3S_SSH_KEY_B64" | base64 -d > ~/.ssh/k3s_key
-          chmod 600 ~/.ssh/k3s_key
-          echo "Adding K3s host key"
-          ssh-keyscan -p "$K3S_SSH_PORT" "$K3S_SSH_HOST" >> ~/.ssh/known_hosts
-          echo "Uploading $IMAGE_ARCHIVE"
-          dd if="$IMAGE_ARCHIVE" bs=4M status=progress | ssh -p "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$K3S_SSH_USER@$K3S_SSH_HOST" "cat > /tmp/$IMAGE_ARCHIVE"
-          echo "Importing image into K3s containerd"
-          ssh -p "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$K3S_SSH_USER@$K3S_SSH_HOST" "ls -lh /tmp/$IMAGE_ARCHIVE && gzip -dc /tmp/$IMAGE_ARCHIVE | sudo k3s ctr -n k8s.io images import - && rm -f /tmp/$IMAGE_ARCHIVE"
+          docker push $IMAGE_NAME:$IMAGE_TAG
+          docker push $IMAGE_NAME:latest
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v4
@@ -68,7 +52,14 @@ jobs:
             --from-file=alipay.php=alipay.php \
             -n $K8S_NAMESPACE \
             --dry-run=client -o yaml | kubectl apply --validate=false -f -
+          kubectl create secret docker-registry dockerhub-registry \
+            --docker-server=https://index.docker.io/v1/ \
+            --docker-username=${{ secrets.DOCKER_USERNAME }} \
+            --docker-password=${{ secrets.DOCKER_PASSWORD }} \
+            -n $K8S_NAMESPACE \
+            --dry-run=client -o yaml | kubectl apply --validate=false -f -
           sed -i "s|image: __IMAGE__|image: $IMAGE_NAME:$IMAGE_TAG|" ./Kubernetes-dev.yaml
           sed -i "s|__ALIMPAY_HOST__|$ALIMPAY_HOST|g" ./Kubernetes-dev.yaml
           kubectl apply --validate=false -n $K8S_NAMESPACE -f ./Kubernetes-dev.yaml
+          kubectl rollout restart -n $K8S_NAMESPACE deployment/alimpay
           kubectl rollout status -n $K8S_NAMESPACE deployment/alimpay --timeout=300s
