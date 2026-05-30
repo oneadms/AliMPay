@@ -31,14 +31,14 @@ jobs:
           K3S_SSH_HOST: ${{ secrets.K3S_SSH_HOST }}
           K3S_SSH_PORT: ${{ secrets.K3S_SSH_PORT || '22' }}
           K3S_SSH_USER: ${{ secrets.K3S_SSH_USER }}
-          K3S_SSH_KEY: ${{ secrets.K3S_SSH_KEY }}
+          K3S_SSH_KEY_B64: ${{ secrets.K3S_SSH_KEY_B64 }}
         run: |
           test -n "$K3S_SSH_HOST"
           test -n "$K3S_SSH_PORT"
           test -n "$K3S_SSH_USER"
-          test -n "$K3S_SSH_KEY"
+          test -n "$K3S_SSH_KEY_B64"
           mkdir -p ~/.ssh
-          printf '%s' "$K3S_SSH_KEY" > ~/.ssh/k3s_key
+          printf '%s' "$K3S_SSH_KEY_B64" | base64 -d > ~/.ssh/k3s_key
           chmod 600 ~/.ssh/k3s_key
           ssh-keyscan -p "$K3S_SSH_PORT" "$K3S_SSH_HOST" >> ~/.ssh/known_hosts
           scp -P "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$IMAGE_ARCHIVE" "$K3S_SSH_USER@$K3S_SSH_HOST:/tmp/$IMAGE_ARCHIVE"
