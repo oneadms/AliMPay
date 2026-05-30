@@ -710,7 +710,17 @@ try {
             $pid = $_GET['pid'] ?? $_POST['pid'] ?? '';
             $key = $_GET['key'] ?? $_POST['key'] ?? '';
             $outTradeNo = $_GET['out_trade_no'] ?? $_POST['out_trade_no'] ?? '';
-            
+
+            $logger->info('Order status query request received.', [
+                'pid' => $pid,
+                'out_trade_no' => $outTradeNo,
+                'has_key' => $key !== '',
+                'method' => $method,
+                'ip' => $ip,
+                'referer' => $_SERVER['HTTP_REFERER'] ?? '',
+                'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? ''
+            ]);
+
             if (empty($pid) || empty($outTradeNo)) {
                 ob_end_clean();
                 http_response_code(400);

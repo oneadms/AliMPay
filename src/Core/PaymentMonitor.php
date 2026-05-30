@@ -382,6 +382,14 @@ class PaymentMonitor
         try {
             $result = $this->billQuery->queryBills($startTime, $endTime);
 
+            $this->logger->info('Bill query response summary.', [
+                'success' => $result['success'] ?? null,
+                'data_keys' => isset($result['data']) && is_array($result['data']) ? array_keys($result['data']) : [],
+                'raw_count_detail_list' => isset($result['data']['detail_list']) && is_array($result['data']['detail_list']) ? count($result['data']['detail_list']) : null,
+                'raw_count_account_log_list' => isset($result['data']['accountLogList']) && is_array($result['data']['accountLogList']) ? count($result['data']['accountLogList']) : null,
+                'message' => $result['message'] ?? null
+            ]);
+
             if (!$result['success']) {
                 $this->logger->error("Failed to query bills.", ['response' => $result['message'] ?? 'Alipay API returned an error.']);
                 return;
@@ -401,6 +409,12 @@ class PaymentMonitor
             $businessQrMode = $config['payment']['business_qr_mode']['enabled'] ?? false;
             
             if ($businessQrMode) {
+                $this->logger->info('Routing bills to business QR matcher.', [
+                    'bill_count' => count($bills),
+                    'match_tolerance' => $config['payment']['business_qr_mode']['match_tolerance'] ?? null,
+                    'order_timeout' => $config['payment']['order_timeout'] ?? null,
+                    'query_minutes_back' => $config['payment']['query_minutes_back'] ?? null
+                ]);
                 $this->processBillsForBusinessQrMode($bills);
             } else {
                 $this->processBillsForTraditionalMode($bills);
@@ -416,104 +430,204 @@ class PaymentMonitor
     private function extractBillsFromResult(array $data): array
     {
         $bills = [];
+        $source = 'none';
         if (isset($data['detail_list']) && is_array($data['detail_list'])) {
             $bills = $data['detail_list'];
+            $source = 'detail_list';
         } elseif (isset($data['accountLogList']) && is_array($data['accountLogList'])) {
             $bills = $data['accountLogList'];
+            $source = 'accountLogList';
         } elseif (is_array($data) && isset($data[0])) {
             $bills = $data;
+            $source = 'indexed_array';
         }
+
+        $this->logger->info('Extracting bills from Alipay result.', [
+            'source' => $source,
+            'raw_count' => count($bills),
+            'top_level_keys' => array_keys($data)
+        ]);
 
         if (empty($bills)) {
             return [];
         }
 
-        // 转换数据格式以兼容现有逻辑
         $formattedBills = [];
-        foreach ($bills as $bill) {
-            // 只处理收入类型的账单
+        foreach ($bills as $index => $bill) {
             $direction = $bill['direction'] ?? '';
+            $rawAmount = $bill['trans_amount'] ?? ($bill['amount'] ?? 0);
+            $rawTime = $bill['trans_dt'] ?? ($bill['transDate'] ?? '');
+            $rawTradeNo = $bill['alipay_order_no'] ?? ($bill['alipayOrderNo'] ?? ($bill['tradeNo'] ?? ''));
+            $rawRemark = $bill['trans_memo'] ?? ($bill['memo'] ?? ($bill['remark'] ?? ''));
+
+            $this->logger->info('Raw bill item received.', [
+                'index' => $index,
+                'direction' => $direction,
+                'amount' => $rawAmount,
+                'trans_time' => $rawTime,
+                'trade_no' => $rawTradeNo,
+                'remark' => $rawRemark,
+                'type' => $bill['type'] ?? '',
+                'keys' => array_keys($bill)
+            ]);
+
             if (!empty($direction) && $direction !== '收入') {
+                $this->logger->info('Skipping non-income bill.', [
+                    'index' => $index,
+                    'direction' => $direction,
+                    'amount' => $rawAmount,
+                    'trans_time' => $rawTime
+                ]);
                 continue;
             }
 
             $formattedBills[] = [
-                'tradeNo' => $bill['alipay_order_no'] ?? ($bill['alipayOrderNo'] ?? ($bill['tradeNo'] ?? '')),
-                'amount' => $bill['trans_amount'] ?? ($bill['amount'] ?? 0),
-                'remark' => $bill['trans_memo'] ?? ($bill['memo'] ?? ($bill['remark'] ?? '')),
-                'transDate' => $bill['trans_dt'] ?? ($bill['transDate'] ?? ''),
+                'tradeNo' => $rawTradeNo,
+                'amount' => $rawAmount,
+                'remark' => $rawRemark,
+                'transDate' => $rawTime,
                 'balance' => $bill['balance'] ?? 0,
                 'type' => $bill['type'] ?? ''
             ];
         }
+
+        $this->logger->info('Formatted income bills.', [
+            'formatted_count' => count($formattedBills)
+        ]);
+
         return $formattedBills;
     }
 
     private function processBillsForBusinessQrMode(array $bills): void
     {
-        $this->logger->info("Business QR mode enabled. Using amount-based matching.");
-        
+        $config = $this->loadConfig();
+        $tolerance = $config['payment']['business_qr_mode']['match_tolerance'] ?? 300;
+        $pendingOrders = $this->db->select('codepay_orders', [
+            'id',
+            'out_trade_no',
+            'pid',
+            'price',
+            'payment_amount',
+            'status',
+            'add_time'
+        ], [
+            'status' => 0,
+            'ORDER' => ['add_time' => 'ASC'],
+            'LIMIT' => 20
+        ]);
+
+        $this->logger->info('Business QR mode enabled. Using amount-based matching.', [
+            'bill_count' => count($bills),
+            'pending_order_count_sample' => count($pendingOrders),
+            'match_tolerance' => $tolerance,
+            'pending_orders_sample' => $pendingOrders
+        ]);
+
         foreach ($bills as $bill) {
-            $this->logger->info("Processing bill: Trade No={$bill['tradeNo']}, Amount={$bill['amount']}, Time={$bill['transDate']}");
-            
             $billAmount = (float)$bill['amount'];
-            
-            // 获取相同金额的待支付订单
-            $order = $this->db->get('codepay_orders', '*', [
-                'payment_amount' => $billAmount,
-                'status' => 0,
-                'ORDER' => ['add_time' => 'ASC'] // 获取最早的那个
-            ]);
-            
-            if (!$order) {
-                $this->logger->info("No pending order found for amount {$billAmount}. Skipping.");
-                continue;
-            }
-            
-            // 验证时间容差
-            $config = $this->loadConfig();
-            $tolerance = $config['payment']['business_qr_mode']['match_tolerance'] ?? 300; // 默认5分钟
-            $orderTime = strtotime($order['add_time']);
             $billTime = strtotime($bill['transDate']);
 
-            if ($billTime < $orderTime || ($billTime - $orderTime) > $tolerance) {
-                $this->logger->warning("Order found for amount {$billAmount}, but it is outside the time tolerance.", [
-                    'order_id' => $order['id'],
-                    'out_trade_no' => $order['out_trade_no'],
-                    'order_time' => $order['add_time'],
-                    'bill_time' => $bill['transDate'],
-                    'time_diff' => $billTime - $orderTime,
-                    'tolerance' => $tolerance
+            $this->logger->info('Processing business QR bill.', [
+                'trade_no' => $bill['tradeNo'],
+                'raw_amount' => $bill['amount'],
+                'amount_float' => $billAmount,
+                'raw_time' => $bill['transDate'],
+                'parsed_time' => $billTime ? date('Y-m-d H:i:s', $billTime) : null,
+                'remark' => $bill['remark'],
+                'type' => $bill['type']
+            ]);
+
+            if ($billTime === false) {
+                $this->logger->warning('Skipping bill because transaction time could not be parsed.', [
+                    'trade_no' => $bill['tradeNo'],
+                    'raw_time' => $bill['transDate'],
+                    'amount' => $bill['amount']
                 ]);
                 continue;
             }
-            
-            $this->logger->info("Payment match found for order {$order['id']}. Updating status to paid.", [
-                'out_trade_no' => $order['out_trade_no']
+
+            $amountCandidates = $this->db->select('codepay_orders', [
+                'id',
+                'out_trade_no',
+                'pid',
+                'price',
+                'payment_amount',
+                'status',
+                'add_time'
+            ], [
+                'payment_amount' => $billAmount,
+                'status' => 0,
+                'ORDER' => ['add_time' => 'ASC'],
+                'LIMIT' => 10
             ]);
 
-            // 使用事务确保原子性
-            $this->db->action(function($db) use ($order) {
-                $updated = $db->update('codepay_orders', [
-                    'status' => 1,
-                    'pay_time' => date('Y-m-d H:i:s')
-                ], ['id' => $order['id']]);
+            $this->logger->info('Business QR amount candidate lookup.', [
+                'bill_amount' => $billAmount,
+                'candidate_count' => count($amountCandidates),
+                'candidates' => $amountCandidates
+            ]);
 
-                if ($updated->rowCount() > 0) {
-                    $this->notifyUser($order);
-                    $this->logger->info("Order {$order['id']} successfully marked as paid and notification sent.");
-                    return true; // 确保事务提交
-                } else {
-                    $this->logger->warning("Failed to update order status, it might have been updated by another process.", [
+            if (empty($amountCandidates)) {
+                $this->logger->info('No pending order found for bill amount. Skipping bill.', [
+                    'bill_amount' => $billAmount,
+                    'trade_no' => $bill['tradeNo']
+                ]);
+                continue;
+            }
+
+            foreach ($amountCandidates as $order) {
+                $orderTime = strtotime($order['add_time']);
+                $timeDiff = $billTime - $orderTime;
+
+                $this->logger->info('Checking business QR candidate time window.', [
+                    'order_id' => $order['id'],
+                    'out_trade_no' => $order['out_trade_no'],
+                    'order_amount' => $order['payment_amount'],
+                    'order_time' => $order['add_time'],
+                    'bill_time' => $bill['transDate'],
+                    'time_diff' => $timeDiff,
+                    'tolerance' => $tolerance
+                ]);
+
+                if ($billTime < $orderTime || $timeDiff > $tolerance) {
+                    $this->logger->warning('Business QR candidate rejected by time tolerance.', [
+                        'order_id' => $order['id'],
+                        'out_trade_no' => $order['out_trade_no'],
+                        'order_time' => $order['add_time'],
+                        'bill_time' => $bill['transDate'],
+                        'time_diff' => $timeDiff,
+                        'tolerance' => $tolerance
+                    ]);
+                    continue;
+                }
+
+                $this->logger->info("Payment match found for order {$order['id']}. Updating status to paid.", [
+                    'out_trade_no' => $order['out_trade_no'],
+                    'bill_trade_no' => $bill['tradeNo'],
+                    'bill_amount' => $billAmount,
+                    'time_diff' => $timeDiff
+                ]);
+
+                $this->db->action(function($db) use ($order) {
+                    $updated = $db->update('codepay_orders', [
+                        'status' => 1,
+                        'pay_time' => date('Y-m-d H:i:s')
+                    ], ['id' => $order['id']]);
+
+                    if ($updated->rowCount() > 0) {
+                        $this->notifyUser($order);
+                        $this->logger->info("Order {$order['id']} successfully marked as paid and notification sent.");
+                        return true;
+                    }
+
+                    $this->logger->warning('Failed to update order status, it might have been updated by another process.', [
                         'order_id' => $order['id']
                     ]);
-                    return false; // 回滚事务
-                }
-            });
-            
-            // 由于一笔支付只应匹配一笔订单，处理完后可以跳出循环
-            // 如果希望一笔账单能支付多个相同金额的订单（不推荐），可以移除break
-            break; 
+                    return false;
+                });
+
+                return;
+            }
         }
     }
 

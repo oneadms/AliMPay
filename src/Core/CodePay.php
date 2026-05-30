@@ -296,11 +296,19 @@ class CodePay
                 'return_url' => $params['return_url'],
                 'sitename' => $params['sitename'] ?? ''
             ]);
-            
+
             $this->logger->info('Order record created in database.', [
                 'trade_no' => $tradeNo,
+                'out_trade_no' => $params['out_trade_no'],
+                'pid' => $params['pid'],
+                'type' => $params['type'],
+                'name' => $params['name'],
                 'original_amount' => $originalAmount,
-                'payment_amount' => $paymentAmount
+                'payment_amount' => $paymentAmount,
+                'add_time' => date('Y-m-d H:i:s'),
+                'business_qr_mode' => $businessQrMode,
+                'notify_url' => $params['notify_url'],
+                'return_url' => $params['return_url']
             ]);
 
             // 根据收款模式生成不同的支付二维码
@@ -581,11 +589,28 @@ class CodePay
             ]);
 
             if (!$order) {
+                $this->logger->warning('Order query returned no record.', [
+                    'out_trade_no' => $outTradeNo,
+                    'pid' => $pid,
+                    'validate_key' => $validateKey
+                ]);
+
                 return [
                     'code' => -1,
                     'msg' => 'Order not found'
                 ];
             }
+
+            $this->logger->info('Order query matched database record.', [
+                'out_trade_no' => $outTradeNo,
+                'pid' => $pid,
+                'trade_no' => $order['id'],
+                'status' => (int)$order['status'],
+                'price' => $order['price'],
+                'payment_amount' => $order['payment_amount'] ?? null,
+                'add_time' => $order['add_time'],
+                'pay_time' => $order['pay_time'] ?? null
+            ]);
 
             $response = [
                 'code' => 1,
