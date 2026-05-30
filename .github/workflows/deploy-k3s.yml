@@ -42,8 +42,8 @@ jobs:
           printf '%s' "$K3S_SSH_KEY_B64" | base64 -d > ~/.ssh/k3s_key
           chmod 600 ~/.ssh/k3s_key
           ssh-keyscan -p "$K3S_SSH_PORT" "$K3S_SSH_HOST" >> ~/.ssh/known_hosts
-          scp -v -P "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$IMAGE_ARCHIVE" "$K3S_SSH_USER@$K3S_SSH_HOST:/tmp/$IMAGE_ARCHIVE"
-          ssh -p "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$K3S_SSH_USER@$K3S_SSH_HOST" "gzip -dc /tmp/$IMAGE_ARCHIVE | sudo k3s ctr -n k8s.io images import - && rm -f /tmp/$IMAGE_ARCHIVE"
+          ssh -p "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$K3S_SSH_USER@$K3S_SSH_HOST" "cat > /tmp/$IMAGE_ARCHIVE" < "$IMAGE_ARCHIVE"
+          ssh -p "$K3S_SSH_PORT" -i ~/.ssh/k3s_key "$K3S_SSH_USER@$K3S_SSH_HOST" "ls -lh /tmp/$IMAGE_ARCHIVE && gzip -dc /tmp/$IMAGE_ARCHIVE | sudo k3s ctr -n k8s.io images import - && rm -f /tmp/$IMAGE_ARCHIVE"
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v4
