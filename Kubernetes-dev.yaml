@@ -1,0 +1,167 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alimpay-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alimpay-logs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alimpay-qrcodes
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alimpay-config-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alimpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alimpay
+  template:
+    metadata:
+      labels:
+        app: alimpay
+    spec:
+      imagePullSecrets:
+        - name: dockerhub-registry
+      securityContext:
+        fsGroup: 33
+      initContainers:
+        - name: init-runtime-dirs
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - chown -R 33:33 /data /logs /qrcodes /config-data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: logs
+              mountPath: /logs
+            - name: qrcodes
+              mountPath: /qrcodes
+            - name: config-data
+              mountPath: /config-data
+      containers:
+        - name: alimpay
+          image: __IMAGE__
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: data
+              mountPath: /var/www/html/data
+            - name: logs
+              mountPath: /var/www/html/logs
+            - name: qrcodes
+              mountPath: /var/www/html/qrcodes
+            - name: config-data
+              mountPath: /var/www/html/config
+            - name: alipay-config
+              mountPath: /var/www/html/config/alipay.php
+              subPath: alipay.php
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test -s /var/www/html/config/alipay.php && test -w /var/www/html/data && test -w /var/www/html/logs && test -w /var/www/html/qrcodes && php -r 'require "/var/www/html/vendor/autoload.php"; new AliMPay\\Core\\CodePay();'
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api.php?action=health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: alimpay-data
+        - name: logs
+          persistentVolumeClaim:
+            claimName: alimpay-logs
+        - name: qrcodes
+          persistentVolumeClaim:
+            claimName: alimpay-qrcodes
+        - name: config-data
+          persistentVolumeClaim:
+            claimName: alimpay-config-data
+        - name: alipay-config
+          secret:
+            secretName: alimpay-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alimpay
+spec:
+  selector:
+    app: alimpay
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: alimpay
+spec:
+  rules:
+    - host: __ALIMPAY_HOST__
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: alimpay
+                port:
+                  number: 80

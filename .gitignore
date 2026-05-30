@@ -1,3 +1,6 @@
+# Claude local workspace
+.claude/
+
 # Composer
 /vendor/
 composer.lock
