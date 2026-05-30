@@ -153,7 +153,14 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: alimpay
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/compress: "true"
 spec:
+  tls:
+    - secretName: alimpay-dev-tls
+      hosts:
+        - __ALIMPAY_HOST__
   rules:
     - host: __ALIMPAY_HOST__
       http:
