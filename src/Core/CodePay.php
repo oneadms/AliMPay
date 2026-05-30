@@ -360,9 +360,13 @@ class CodePay
                 'pid' => $params['pid'], // 增加pid确保返回
                 'trade_no' => $tradeNo,
                 'out_trade_no' => $params['out_trade_no'],
+                'type' => $params['type'],
+                'name' => $params['name'],
                 'money' => $params['money'],  // 原始金额
                 'payment_amount' => $paymentAmount,  // 实际支付金额
-                'payment_url' => $paymentUrl
+                'payment_url' => $paymentUrl,
+                'notify_url' => $params['notify_url'],
+                'return_url' => $params['return_url']
             ];
             
             // 根据收款模式添加二维码字段
@@ -760,32 +764,18 @@ class CodePay
         }
 
         try {
-            $notifyData = [
-                'pid' => $orderData['pid'],
-                'trade_no' => $orderData['id'],
-                'out_trade_no' => $orderData['out_trade_no'],
-                'type' => $orderData['type'],
-                'name' => $orderData['name'],
-                'money' => number_format($orderData['price'], 2, '.', ''),
-                'trade_status' => 'TRADE_SUCCESS'
-            ];
+            $notifyData = $this->buildCallbackData($orderData);
 
-            // Generate signature
-            $notifyData['sign'] = $this->generateResponseSignature($notifyData);
-            $notifyData['sign_type'] = 'MD5';
-
-            // Send notification
-            $url = $orderData['notify_url'];
-            $queryString = http_build_query($notifyData);
-            $fullUrl = $url . (strpos($url, '?') !== false ? '&' : '?') . $queryString;
+            $url = $this->buildCallbackUrl($orderData['notify_url'], $notifyData);
 
             $this->logger->info('Sending notification to merchant.', [
                 'out_trade_no' => $orderData['out_trade_no'],
-                'notify_url' => $orderData['notify_url']
+                'notify_url' => $orderData['notify_url'],
+                'callback_keys' => array_keys($notifyData)
             ]);
 
-            $response = file_get_contents($fullUrl);
-            $success = ($response === 'success' || $response === 'SUCCESS');
+            $response = file_get_contents($url);
+            $success = trim((string)$response) === 'success' || trim((string)$response) === 'SUCCESS';
 
             if ($success) {
                 $this->logger->info('Notification sent successfully.', ['out_trade_no' => $orderData['out_trade_no']]);
@@ -806,4 +796,45 @@ class CodePay
             return false;
         }
     }
-} 
+
+    public function buildReturnUrl(array $paymentData, array $requestParams): string
+    {
+        $returnUrl = $requestParams['return_url'] ?? ($paymentData['return_url'] ?? '');
+        if ($returnUrl === '') {
+            return '';
+        }
+
+        return $this->buildCallbackUrl($returnUrl, $this->buildCallbackData([
+            'id' => $paymentData['trade_no'] ?? '',
+            'out_trade_no' => $paymentData['out_trade_no'] ?? ($requestParams['out_trade_no'] ?? ''),
+            'pid' => $paymentData['pid'] ?? ($requestParams['pid'] ?? ''),
+            'type' => $paymentData['type'] ?? ($requestParams['type'] ?? 'alipay'),
+            'name' => $paymentData['name'] ?? ($requestParams['name'] ?? ''),
+            'price' => $paymentData['money'] ?? ($requestParams['money'] ?? '0'),
+        ]));
+    }
+
+    private function buildCallbackData(array $orderData): array
+    {
+        $callbackData = [
+            'pid' => $orderData['pid'] ?? '',
+            'trade_no' => $orderData['id'] ?? ($orderData['trade_no'] ?? ''),
+            'out_trade_no' => $orderData['out_trade_no'] ?? '',
+            'type' => $orderData['type'] ?? '',
+            'name' => $orderData['name'] ?? '',
+            'money' => number_format((float)($orderData['price'] ?? ($orderData['money'] ?? 0)), 2, '.', ''),
+            'trade_status' => 'TRADE_SUCCESS'
+        ];
+
+        $callbackData['sign'] = $this->generateResponseSignature($callbackData);
+        $callbackData['sign_type'] = 'MD5';
+
+        return $callbackData;
+    }
+
+    private function buildCallbackUrl(string $url, array $callbackData): string
+    {
+        $queryString = http_build_query($callbackData);
+        return $url . (strpos($url, '?') !== false ? '&' : '?') . $queryString;
+    }
+}

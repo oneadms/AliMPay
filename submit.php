@@ -23,7 +23,9 @@ try {
         'sign' => $requestData['sign'] ?? '',
         'sign_type' => $requestData['sign_type'] ?? 'MD5'
     ];
-    
+
+    $codePay = new CodePay();
+
     // 如果是直接从api.php重定向而来，参数可能在POST中
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($requestData['payment_result'])) {
         $result = json_decode($requestData['payment_result'], true);
@@ -37,19 +39,21 @@ try {
             'method' => $_SERVER['REQUEST_METHOD'],
             'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown'
         ]);
-        
-        $codePay = new CodePay();
+
         $result = $codePay->createPayment($params);
     }
-    
+
     if ($result['code'] !== 1) {
         throw new Exception($result['msg']);
     }
-    
+
     // 优先使用实际支付金额
     $displayAmount = $result['payment_amount'] ?? $params['money'];
-    $logger->info('Payment page generated successfully.', ['out_trade_no' => $params['out_trade_no']]);
-    
+    $displayName = $params['name'] ?: ($result['name'] ?? '');
+    $displaySitename = $params['sitename'] ?: ($result['sitename'] ?? '');
+    $returnUrl = $codePay->buildReturnUrl($result, $params);
+    $logger->info('Payment page generated successfully.', ['out_trade_no' => $params['out_trade_no'] ?: ($result['out_trade_no'] ?? '')]);
+
     ?>
     <!DOCTYPE html>
     <html>
@@ -232,12 +236,12 @@ try {
                 <strong>注意：</strong> <?php echo htmlspecialchars($result['adjustment_note']); ?>
             </div>
             <?php endif; ?>
-            
+
             <div class="order-info">
                 <h3>订单信息</h3>
                 <div class="info-item">
                     <span class="info-label">商品名称：</span>
-                    <span class="info-value"><?php echo htmlspecialchars($params['name']); ?></span>
+                    <span class="info-value"><?php echo htmlspecialchars($displayName); ?></span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">订单号：</span>
@@ -255,22 +259,22 @@ try {
                     <span class="info-label">支付方式：</span>
                     <span class="info-value">支付宝</span>
                 </div>
-                <?php if (!empty($params['sitename'])): ?>
+                <?php if (!empty($displaySitename)): ?>
                 <div class="info-item">
                     <span class="info-label">商户名称：</span>
-                    <span class="info-value"><?php echo htmlspecialchars($params['sitename']); ?></span>
+                    <span class="info-value"><?php echo htmlspecialchars($displaySitename); ?></span>
                 </div>
                 <?php endif; ?>
             </div>
-            
+
             <div class="status pending" id="paymentStatus">
                 等待支付...
             </div>
-            
+
             <div class="countdown" id="countdownDisplay">
                 剩余支付时间：<span id="countdown">05:00</span>
             </div>
-            
+
             <?php if (isset($result['business_qr_mode']) && $result['business_qr_mode']): ?>
                 <div class="qr-code">
                     <p>请使用支付宝扫描下方二维码完成支付</p>
@@ -311,7 +315,7 @@ try {
 
         <script>
             let countdownInterval;
-            
+
             function startCountdown(duration) {
                 let timer = duration, minutes, seconds;
                 const display = document.getElementById('countdown');
@@ -350,9 +354,9 @@ try {
                             statusElement.textContent = '支付成功';
                             statusElement.className = 'status success';
                             clearInterval(countdownInterval); // Stop countdown
-                            
+
                             // Redirect to return_url if available
-                            const returnUrl = '<?php echo htmlspecialchars($params['return_url']); ?>';
+                            const returnUrl = <?php echo json_encode($returnUrl, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
                             if (returnUrl) {
                                 window.location.href = returnUrl;
                             }
@@ -374,7 +378,7 @@ try {
 
             // Periodically check order status every 5 seconds
             setInterval(checkOrderStatus, 5000);
-            
+
             // Initial check
             checkOrderStatus();
         </script>
@@ -383,7 +387,7 @@ try {
     <?php
 } catch (Exception $e) {
     $logger->error('Payment page failed to generate.', ['error' => $e->getMessage()]);
-    
+
     // Display a user-friendly error page
     ?>
     <!DOCTYPE html>
@@ -407,4 +411,4 @@ try {
     </body>
     </html>
     <?php
-} 
+}
