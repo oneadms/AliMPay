@@ -2,16 +2,15 @@
 
 namespace AliMPay\Core;
 
-use Alipay\OpenAPISDK\Api\AlipayDataBillAccountlogApi;
 use Alipay\OpenAPISDK\ApiException;
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\RequestException;
 use AliMPay\Utils\Logger;
 
 class BillQuery
 {
     private $alipayClient;
     private $logger;
-    private $apiInstance;
     
     public function __construct(AlipayClient $alipayClient = null)
     {
@@ -20,13 +19,6 @@ class BillQuery
         
         $this->alipayClient = $alipayClient ?: new AlipayClient();
         $this->logger = Logger::getInstance();
-        $this->initializeApiInstance();
-    }
-    
-    private function initializeApiInstance(): void
-    {
-        $this->apiInstance = new AlipayDataBillAccountlogApi(new Client());
-        $this->apiInstance->setAlipayConfigUtil($this->alipayClient->getAlipayConfigUtil());
     }
     
     /**
@@ -61,25 +53,17 @@ class BillQuery
                 'page_size' => $pageSize
             ]);
             
-            // Execute API call - Only pass startTime and endTime, other parameters are null
-            $result = $this->apiInstance->query(
-                $startTime,     // startTime - required
-                $endTime,       // endTime - required
-                null,           // alipayOrderNo - optional
-                null,           // merchantOrderNo - optional
-                (string)$pageNo,    // pageNo - optional
-                (string)$pageSize,  // pageSize - optional
-                null,           // transCode - optional
-                null,           // agreementNo - optional
-                null,           // agreementProductCode - optional
-                null,           // billUserId - optional
-                null            // openId - optional
+            $result = $this->queryAccountLogsWithSignedRequest(
+                $startTime,
+                $endTime,
+                $pageNo,
+                $pageSize
             );
-            
+
             $this->logger->info('Account log query successful', [
-                'result_type' => get_class($result)
+                'result_keys' => is_array($result) ? array_keys($result) : []
             ]);
-            
+
             return $this->formatResult($result);
             
         } catch (ApiException $e) {
@@ -89,8 +73,28 @@ class BillQuery
                 'response_body' => $e->getResponseBody(),
                 'response_headers' => $e->getResponseHeaders()
             ]);
-            
+
             throw new \Exception('查询失败: ' . $e->getMessage(), $e->getCode());
+        } catch (RequestException $e) {
+            $response = $e->getResponse();
+            $responseStatus = $response ? $response->getStatusCode() : null;
+            $responseBody = $response ? (string)$response->getBody() : null;
+            $responseHeaders = $response ? $response->getHeaders() : [];
+            $decodedError = is_string($responseBody) ? json_decode($responseBody, true) : null;
+
+            $this->logger->error('Signed account log request failed', [
+                'message' => $e->getMessage(),
+                'code' => $e->getCode(),
+                'response_status' => $responseStatus,
+                'alipay_code' => is_array($decodedError) ? ($decodedError['code'] ?? null) : null,
+                'alipay_message' => is_array($decodedError) ? ($decodedError['message'] ?? null) : null,
+                'alipay_trace_id' => $responseHeaders['alipay-trace-id'][0] ?? null
+            ]);
+
+            $errorMessage = is_array($decodedError)
+                ? (($decodedError['code'] ?? 'unknown') . ': ' . ($decodedError['message'] ?? ''))
+                : $e->getMessage();
+            throw new \Exception('查询失败: ' . $errorMessage, $e->getCode());
         } catch (\Exception $e) {
             $this->logger->error('Exception occurred', [
                 'message' => $e->getMessage(),
@@ -147,6 +151,55 @@ class BillQuery
         return $this->queryBills($startTime, $endTime);
     }
     
+    private function queryAccountLogsWithSignedRequest(
+        string $startTime,
+        string $endTime,
+        int $pageNo,
+        int $pageSize
+    ): array {
+        $resourcePath = '/v3/alipay/data/bill/accountlog/query';
+        $queryParams = [
+            'start_time' => $startTime,
+            'end_time' => $endTime,
+            'page_no' => (string)$pageNo,
+            'page_size' => (string)$pageSize,
+        ];
+        $query = http_build_query($queryParams, '', '&', PHP_QUERY_RFC3986);
+        $url = $resourcePath . '?' . $query;
+
+        $headers = [
+            'Accept' => 'application/json',
+            'Content-Type' => 'application/json',
+            'alipay-request-id' => $this->alipayClient->getAlipayConfigUtil()->createUuid(),
+        ];
+        $this->alipayClient->getAlipayConfigUtil()->sign('GET', $url, '', $headers);
+
+        $authorization = $headers['Authorization'] ?? '';
+        $this->logger->info('Prepared signed Alipay account log request', [
+            'url' => $resourcePath,
+            'query_keys' => array_keys($queryParams),
+            'has_authorization' => $authorization !== '',
+            'authorization_has_sign' => strpos($authorization, ',sign=') !== false,
+            'request_id' => $headers['alipay-request-id']
+        ]);
+
+        $client = new Client();
+        $response = $client->request('GET', rtrim($this->alipayClient->getConfig()['server_url'], '/') . $url, [
+            'headers' => $headers,
+        ]);
+
+        $body = (string)$response->getBody();
+        $this->alipayClient->getAlipayConfigUtil()->verifyResponse($body, $response->getHeaders(), false);
+        $body = $this->alipayClient->getAlipayConfigUtil()->decrypt($body);
+
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            throw new \Exception('支付宝账单查询响应不是有效 JSON');
+        }
+
+        return $decoded;
+    }
+
     private function validateQueryParams(
         string $startTime,
         string $endTime,

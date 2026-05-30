@@ -269,10 +269,11 @@ class PaymentMonitor
             
             $result = $this->billQuery->queryBills($queryStart, $queryEnd, null, 1, 200);
             
-            if ($result['success'] && !empty($result['data']['detail_list'])) {
-                $this->logger->info('Bills query successful, found ' . count($result['data']['detail_list']) . ' records.', ['order_no' => $orderNo]);
+            $detailList = $result['data']['detail_list'] ?? $result['data']['accountLogList'] ?? [];
+            if ($result['success'] && !empty($detailList)) {
+                $this->logger->info('Bills query successful, found ' . count($detailList) . ' records.', ['order_no' => $orderNo]);
                 $payment = $this->findPaymentByMemo($result['data'], $orderNo, $expectedAmount);
-                
+
                 if ($payment) {
                     $this->logger->info('Payment found in manual search', [
                         'order_no' => $orderNo,
@@ -291,15 +292,15 @@ class PaymentMonitor
                         'order_no' => $orderNo,
                         'expected_amount' => $expectedAmount,
                         'search_range' => $queryStart . ' ~ ' . $queryEnd,
-                        'total_records' => count($result['data']['detail_list'] ?? [])
+                        'total_records' => count($detailList)
                     ]);
-                    
+
                     return [
                         'success' => false,
                         'status' => 'not_found',
                         'message' => '未找到匹配的支付记录',
                         'search_range' => $queryStart . ' ~ ' . $queryEnd,
-                        'total_records_checked' => count($result['data']['detail_list'] ?? [])
+                        'total_records_checked' => count($detailList)
                     ];
                 }
             } else {
