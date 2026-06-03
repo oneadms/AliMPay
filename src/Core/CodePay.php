@@ -117,26 +117,39 @@ class CodePay
                 pay_time DATETIME,
                 notify_url VARCHAR(255),
                 return_url VARCHAR(255),
-                sitename VARCHAR(255)
+                sitename VARCHAR(255),
+                notify_status TINYINT(1) DEFAULT 0,
+                notify_time DATETIME,
+                notify_count INTEGER DEFAULT 0
             );
         ");
         
-        // 检查表结构，确保payment_amount字段存在
         $columns = $this->db->query("PRAGMA table_info(codepay_orders);")->fetchAll();
-        $hasPaymentAmount = false;
-        foreach ($columns as $column) {
-            if ($column['name'] === 'payment_amount') {
-                $hasPaymentAmount = true;
-                break;
-            }
-        }
-        
+        $existingColumns = array_column($columns, 'name');
+        $hasPaymentAmount = in_array('payment_amount', $existingColumns, true);
+
         if (!$hasPaymentAmount) {
             $this->db->exec("ALTER TABLE codepay_orders ADD COLUMN payment_amount DECIMAL(10, 2) DEFAULT 0");
             $this->logger->info('Added payment_amount column to existing table.');
         }
-        
-        $this->logger->info('Database table codepay_orders initialized.', ['has_payment_amount' => $hasPaymentAmount]);
+
+        $notifyColumns = [
+            'notify_status' => 'TINYINT(1) DEFAULT 0',
+            'notify_time' => 'DATETIME',
+            'notify_count' => 'INTEGER DEFAULT 0'
+        ];
+
+        foreach ($notifyColumns as $column => $definition) {
+            if (!in_array($column, $existingColumns, true)) {
+                $this->db->exec("ALTER TABLE codepay_orders ADD COLUMN {$column} {$definition}");
+                $this->logger->info('Added notification tracking column to existing table.', ['column' => $column]);
+            }
+        }
+
+        $this->logger->info('Database table codepay_orders initialized.', [
+            'has_payment_amount' => $hasPaymentAmount,
+            'has_notify_status' => in_array('notify_status', $existingColumns, true)
+        ]);
     }
     
     /**

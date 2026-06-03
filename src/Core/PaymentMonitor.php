@@ -371,9 +371,6 @@ class PaymentMonitor
         $minutes = $this->codepay_config['query_minutes_back'] ?? 30;
         $this->logger->info("Starting payment monitoring cycle for the last {$minutes} minutes...");
 
-        // 自动清理过期订单
-        $this->cleanupExpiredOrders();
-
         // 计算时间范围
         $endTime = date('Y-m-d H:i:s');
         $startTime = date('Y-m-d H:i:s', strtotime("-{$minutes} minutes"));
@@ -423,6 +420,9 @@ class PaymentMonitor
 
         } catch (\Exception $e) {
             $this->logger->error("Error during monitoring cycle: " . $e->getMessage());
+        } finally {
+            $this->retryPendingNotifications();
+            $this->cleanupExpiredOrders();
         }
 
         $this->logger->info("Payment monitoring cycle finished.");
@@ -687,22 +687,49 @@ class PaymentMonitor
         }
     }
 
-    private function notifyUser($order)
+    private function notifyUser($order): bool
     {
-        // 检查是否有通知URL
         if (empty($order['notify_url'])) {
             $this->logger->log("No notify_url configured for order {$order['id']}. Skipping notification.");
-            return;
+            return false;
         }
 
-        // 使用CodePay类的标准方法发送通知，确保签名一致性
         $codePay = new \AliMPay\Core\CodePay();
         $success = $codePay->sendNotification($order);
+        $this->db->update('codepay_orders', [
+            'notify_status' => $success ? 1 : 0,
+            'notify_time' => date('Y-m-d H:i:s'),
+            'notify_count[+]' => 1
+        ], ['id' => $order['id']]);
 
         if ($success) {
             $this->logger->log("Merchant notification successful for order {$order['id']}.");
         } else {
             $this->logger->log("Merchant notification failed for order {$order['id']}.");
+        }
+
+        return $success;
+    }
+
+    private function retryPendingNotifications(): void
+    {
+        $orders = $this->db->select('codepay_orders', '*', [
+            'status' => 1,
+            'notify_status' => 0,
+            'notify_count[<]' => 10,
+            'notify_url[!]' => '',
+            'ORDER' => ['pay_time' => 'ASC'],
+            'LIMIT' => 20
+        ]);
+
+        if (empty($orders)) {
+            return;
+        }
+
+        $this->logger->info('Retrying pending merchant notifications.', ['count' => count($orders)]);
+
+        foreach ($orders as $order) {
+            $this->notifyUser($order);
         }
     }
 
@@ -719,7 +746,10 @@ class PaymentMonitor
             return;
         }
         
-        $timeoutSeconds = $config['payment']['order_timeout'] ?? 300; // 默认5分钟
+        $orderTimeoutSeconds = $config['payment']['order_timeout'] ?? 300;
+        $queryWindowSeconds = (int)(($config['payment']['query_minutes_back'] ?? 30) * 60);
+        $matchToleranceSeconds = $config['payment']['business_qr_mode']['match_tolerance'] ?? 300;
+        $timeoutSeconds = max($orderTimeoutSeconds, $queryWindowSeconds + $matchToleranceSeconds);
         $expiredTime = date('Y-m-d H:i:s', time() - $timeoutSeconds);
         
         try {
@@ -737,7 +767,10 @@ class PaymentMonitor
             $this->logger->info('Found expired orders for cleanup.', [
                 'count' => count($expiredOrders),
                 'expired_before' => $expiredTime,
-                'timeout_seconds' => $timeoutSeconds
+                'timeout_seconds' => $timeoutSeconds,
+                'order_timeout_seconds' => $orderTimeoutSeconds,
+                'query_window_seconds' => $queryWindowSeconds,
+                'match_tolerance_seconds' => $matchToleranceSeconds
             ]);
             
             // 删除过期订单
