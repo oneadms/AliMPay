@@ -609,23 +609,37 @@ class PaymentMonitor
                     'time_diff' => $timeDiff
                 ]);
 
-                $this->db->action(function($db) use ($order) {
-                    $updated = $db->update('codepay_orders', [
-                        'status' => 1,
-                        'pay_time' => date('Y-m-d H:i:s')
-                    ], ['id' => $order['id']]);
+                $updated = $this->db->update('codepay_orders', [
+                    'status' => 1,
+                    'pay_time' => date('Y-m-d H:i:s')
+                ], [
+                    'id' => $order['id'],
+                    'status' => 0
+                ]);
 
-                    if ($updated->rowCount() > 0) {
-                        $this->notifyUser($order);
-                        $this->logger->info("Order {$order['id']} successfully marked as paid and notification sent.");
-                        return true;
-                    }
-
+                if ($updated->rowCount() <= 0) {
                     $this->logger->warning('Failed to update order status, it might have been updated by another process.', [
                         'order_id' => $order['id']
                     ]);
-                    return false;
-                });
+                    return;
+                }
+
+                $paidOrder = $this->db->get('codepay_orders', '*', ['id' => $order['id']]);
+                if (!$paidOrder) {
+                    $this->logger->error('Failed to reload paid order for merchant notification.', [
+                        'order_id' => $order['id'],
+                        'out_trade_no' => $order['out_trade_no']
+                    ]);
+                    return;
+                }
+
+                $this->logger->info('Business QR order marked as paid. Sending merchant notification.', [
+                    'order_id' => $paidOrder['id'],
+                    'out_trade_no' => $paidOrder['out_trade_no'],
+                    'has_notify_url' => !empty($paidOrder['notify_url'])
+                ]);
+                $this->notifyUser($paidOrder);
+                $this->logger->info("Order {$order['id']} successfully marked as paid and notification attempted.");
 
                 return;
             }
