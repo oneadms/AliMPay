@@ -338,14 +338,34 @@ class CodePay
                 $baseUrl = $this->getBaseUrl();
                 $qrCodeUrl = $baseUrl . '/qrcode.php?type=business&token=' . $token;
                 
-                $paymentUrl = '经营码收款模式';  // 经营码模式不需要支付URL
+                // 经营码模式下同样生成转账 deep link，供「打开支付宝App支付」按钮直接付款使用
+                $paymentUrl = '';
+                try {
+                    $alipayTransfer = new AlipayTransfer($this->config);
+                    $paymentUrl = $alipayTransfer->createOrder(
+                        $params['out_trade_no'],
+                        $paymentAmount,
+                        $params['name']
+                    );
+                    $this->logger->info('Business QR mode: generated transfer deep link for direct payment.', [
+                        'trade_no' => $tradeNo,
+                        'payment_url' => $paymentUrl
+                    ]);
+                } catch (\Exception $e) {
+                    // 生成失败时降级为仅扫码支付，不阻塞下单
+                    $this->logger->warning('Business QR mode: failed to generate transfer deep link, QR-only payment will be used.', [
+                        'trade_no' => $tradeNo,
+                        'error' => $e->getMessage()
+                    ]);
+                }
                 $qrCodeBase64 = null;  // 经营码模式不使用base64
                 
                 $this->logger->info('Using business QR code for payment.', [
                     'trade_no' => $tradeNo,
                     'payment_amount' => $paymentAmount,
                     'qr_code_path' => $qrCodePath,
-                    'qr_code_url' => $qrCodeUrl
+                    'qr_code_url' => $qrCodeUrl,
+                    'payment_url' => $paymentUrl
                 ]);
             } else {
                 // 传统转账模式：动态生成转账二维码
@@ -393,6 +413,9 @@ class CodePay
             if ($businessQrMode) {
                 $response['business_qr_mode'] = true;
                 $response['payment_instruction'] = "请使用支付宝扫描二维码，支付金额：{$paymentAmount} 元";
+                if (!empty($paymentUrl)) {
+                    $response['payment_instruction'] .= '，或点击「打开支付宝App支付」按钮直接付款';
+                }
                 
                 if ($paymentAmount != $originalAmount) {
                     $response['amount_adjusted'] = true;
@@ -400,13 +423,17 @@ class CodePay
                     $response['original_amount'] = $originalAmount;
                 }
                 
-                $response['payment_tips'] = [
+                $paymentTips = [
                     "请务必支付准确金额：{$paymentAmount} 元",
                     "支付时无需填写备注信息",
                     "请在5分钟内完成支付，超时订单将被自动删除",
                     "支付完成后系统会自动检测到账",
                     "如长时间未到账，请联系客服"
                 ];
+                if (!empty($paymentUrl)) {
+                    array_splice($paymentTips, 1, 0, ['手机访问时可直接点击下方「打开支付宝App支付」按钮完成付款']);
+                }
+                $response['payment_tips'] = $paymentTips;
             }
 
             $this->logger->info('Payment created successfully.', ['trade_no' => $tradeNo]);
