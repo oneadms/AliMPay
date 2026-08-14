@@ -1,0 +1,35 @@
+name: K3s Debug
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Cluster diagnostics
+        run: |
+          kubectl config set-cluster k3s --server=${{ secrets.K3S_SERVER }} --insecure-skip-tls-verify=true
+          kubectl config set-credentials k3s --token=${{ secrets.K3S_TOKEN }}
+          kubectl config set-context k3s --cluster=k3s --user=k3s --namespace=dev
+          kubectl config use-context k3s
+          echo "=== PODS ==="
+          kubectl -n dev get pods -o wide
+          echo "=== DEPLOYMENT ==="
+          kubectl -n dev get deployment alimpay -o wide
+          echo "=== DESCRIBE POD ==="
+          kubectl -n dev describe pod -l app=alimpay | tail -100
+          echo "=== POD LOGS (current) ==="
+          kubectl -n dev logs -l app=alimpay --tail=150 --all-containers
+          echo "=== POD LOGS (previous, if any) ==="
+          kubectl -n dev logs -l app=alimpay --tail=150 --all-containers --previous || true
+          echo "=== EVENTS ==="
+          kubectl -n dev get events --sort-by=.lastTimestamp | tail -50
